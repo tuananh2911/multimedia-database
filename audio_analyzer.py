@@ -1,6 +1,5 @@
 import csv
 import json
-
 import librosa
 from pydub import AudioSegment
 import numpy as np
@@ -54,11 +53,24 @@ class AudioProcessor:
         silence_percentage = (total_silence / len(segment)) * 100
         return silence_percentage
 
-    def calculate_audio_features(self, segment,image_path):
+    def calculate_audio_features(self, segment):
         """Calculate various audio features from a single audio segment."""
         samples = np.array(segment.get_array_of_samples())
         samples_normalized = samples / np.max(np.abs(samples))
         samples_float = librosa.util.buf_to_float(samples_normalized, n_bytes=2, dtype=np.float32)
+
+        # Trích rút MFCC và áp dụng padding nếu cần
+        mfccs = librosa.feature.mfcc(y=samples_float, sr=segment.frame_rate, n_mfcc=40)
+        max_pad_len = 174  # Độ dài cố định cho MFCC
+        if mfccs.shape[1] < max_pad_len:
+            pad_width = max_pad_len - mfccs.shape[1]
+            mfccs = np.pad(mfccs, pad_width=((0, 0), (0, pad_width)), mode='constant')
+        else:
+            mfccs = mfccs[:, :max_pad_len]
+
+        # Lấy trung bình theo khung thời gian
+        mfccs_scaled = np.mean(mfccs.T, axis=0)
+
         # Tính toán độ dài tín hiệu sau khi đệm số 0
         N = len(samples)
         next_power_of_2 = 2 ** (N.bit_length() + 1)
@@ -66,23 +78,6 @@ class AudioProcessor:
 
         padded_samples = np.pad(samples, (0, next_power_of_2 - N), mode='constant')
         windowed_samples = padded_samples * get_window('hann', len(padded_samples))
-        # Tính toán spectrogram
-        frequencies, times, Sxx = spectrogram(windowed_samples, fs)
-
-        # Vẽ và hiển thị spectrogram
-        plt.figure(frameon=False)
-        plt.pcolormesh(times, frequencies, 10 * np.log10(Sxx), shading='gouraud')
-        plt.axis('off')  # Ẩn các trục
-        plt.gca().set_axis_off()
-        plt.subplots_adjust(top=1, bottom=0, right=1, left=0,
-                            hspace=0, wspace=0)
-        plt.margins(0, 0)
-        plt.gca().xaxis.set_major_locator(plt.NullLocator())
-        plt.gca().yaxis.set_major_locator(plt.NullLocator())
-        plt.xlim([0, 0.2])
-        plt.savefig(f"{image_path}.png", bbox_inches='tight',
-                    pad_inches=0)
-        plt.close()
         # Áp dụng Zero-padding
         padded_samples = np.pad(samples, (0, next_power_of_2 - N), mode='constant')
 
@@ -118,10 +113,10 @@ class AudioProcessor:
             "bandwidth": bandwidth,
             "harmonicity": harmonicity,
             "pitch": pitch,
-            "image_path":f"{image_path}.png",
             "average_energy": average_energy,
             "zero_crossing_rate": zcr,
             "silence_percentage": silence_percentage,
+            "mfccs": mfccs_scaled.tolist()  # Thêm đặc trưng MFCC vào kết quả
         }
 
     def process_audios(self, path):
@@ -132,13 +127,11 @@ class AudioProcessor:
             file_name = data["filename"]
             audio = data["audio"]
             segments = self.split_audio(audio)
-            results=[]
-            i=0
-            base_name, extension = os.path.splitext(file_name)
+            results = []
+            i = 0
             for segment in segments:
-                i+=1
-                image_path = f"./{path}/{base_name}_{i}"
-                features = self.calculate_audio_features(segment,image_path)
+                i += 1
+                features = self.calculate_audio_features(segment)
                 results.append(features)
             data_audio.append({"file_name": file_name, "file_results": results})
         return data_audio
@@ -150,7 +143,7 @@ class AudioProcessor:
 
 
 # Usage example:
-# audio_folder = './files'
-# processor = AudioProcessor(audio_folder)
-# results = processor.process_audios("training")
-# processor.save_to_json(results)
+audio_folder = './files'
+processor = AudioProcessor(audio_folder)
+results = processor.process_audios("training")
+processor.save_to_json(results)
